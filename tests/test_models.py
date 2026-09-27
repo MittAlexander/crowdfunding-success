@@ -3,7 +3,14 @@ import pytest
 from sklearn.base import clone
 
 from src.data import clean
-from src.evaluate import calibrate, compute_metrics
+from src.evaluate import (
+    bootstrap_metrics,
+    calibrate,
+    compare_to_reference,
+    compute_metrics,
+    confidence_intervals,
+    fast_metrics,
+)
 from src.explain import shap_values
 from src.features import build_features
 from src.models import MODELS, build_model, param_grid
@@ -68,3 +75,35 @@ def test_shap_values_add_up_to_model_output(name, data):
     # Tree SHAP explains log-odds for the boosters and probabilities for the sklearn tree.
     expected = proba if name == "decision_tree" else np.log(proba / (1 - proba))
     np.testing.assert_allclose(total, expected, atol=1e-4)
+
+
+@pytest.mark.parametrize("seed", [0, 1, 2])
+def test_fast_metrics_match_scikit_learn(seed):
+    rng = np.random.default_rng(seed)
+    y = rng.integers(0, 2, 500)
+    # Rounded probabilities create ties, which both implementations must handle alike.
+    proba = np.round(np.clip(0.3 * y + rng.random(500) * 0.7, 0, 1), 2)
+    expected = compute_metrics(y, proba)
+    actual = fast_metrics(y, proba)
+    for metric, value in expected.items():
+        assert actual[metric] == pytest.approx(value, abs=1e-10), metric
+
+
+def test_bootstrap_intervals_and_paired_comparison():
+    rng = np.random.default_rng(0)
+    y = rng.integers(0, 2, 2000)
+    probas = {
+        "good": np.clip(0.5 * y + rng.random(2000) * 0.5, 0, 1),
+        "random": rng.random(2000),
+    }
+    samples = bootstrap_metrics(y, probas, n_resamples=200, seed=0)
+    ci = confidence_intervals(samples, 0.95).set_index("model")
+    assert ci.loc["random", "roc_auc_ci_low"] < 0.5 < ci.loc["random", "roc_auc_ci_high"]
+    assert ci.loc["good", "roc_auc_ci_low"] > 0.8
+
+    comparison = compare_to_reference(samples, "good", ["roc_auc", "log_loss"], 0.95)
+    auc = comparison.set_index("metric").loc["roc_auc"]
+    assert auc["ci_high"] < 0 and auc["p_reference_better"] == 1.0
+    # For log loss lower is better, so "good" still wins although the difference is positive.
+    loss = comparison.set_index("metric").loc["log_loss"]
+    assert loss["ci_low"] > 0 and loss["p_reference_better"] == 1.0

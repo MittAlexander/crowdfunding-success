@@ -14,6 +14,7 @@ def test_pipeline_end_to_end(tmp_path):
     config["output"]["dir"] = str(tmp_path / "outputs")
     config["cv"]["n_splits"] = 2
     config["explain"]["sample_size"] = 200
+    config["bootstrap"]["n_resamples"] = 50
     # Keep the search small so the test stays fast.
     config["models"]["decision_tree"]["params"] = {"max_depth": [3, 5]}
     config["models"]["lightgbm"] = {"n_iter": 1, "params": {"n_estimators": 50}}
@@ -29,6 +30,16 @@ def test_pipeline_end_to_end(tmp_path):
         ("train", "raw"), ("test", "raw"), ("test", "calibrated")}
     test_raw = metrics[(metrics["split"] == "test") & (metrics["variant"] == "raw")]
     assert test_raw.set_index("model").loc["catboost", "roc_auc"] > 0.6
+
+    test_rows = metrics[metrics["split"] == "test"]
+    assert (test_rows["roc_auc_ci_low"] <= test_rows["roc_auc"]).all()
+    assert (test_rows["roc_auc"] <= test_rows["roc_auc_ci_high"]).all()
+    assert metrics.loc[metrics["split"] == "train", "roc_auc_ci_low"].isna().all()
+
+    comparison = pd.read_csv(run_dir / "model_comparison.csv")
+    assert set(comparison["variant"]) == {"raw", "calibrated"}
+    assert set(comparison["metric"]) == {"roc_auc", "log_loss", "brier"}
+    assert comparison["p_reference_better"].between(0, 1).all()
 
     shap = pd.read_csv(run_dir / "shap_importance.csv")
     assert set(shap["model"]) == {"catboost", "lightgbm"}
