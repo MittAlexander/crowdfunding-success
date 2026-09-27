@@ -1,0 +1,8 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+filterwarnings = [
+    # Expected for discrete features binned for Naive Bayes (see src/pipeline.py).
+    "ignore:Bins whose width are too small:UserWarning",
+    "ignore::PendingDeprecationWarning:shap.*",
+]
