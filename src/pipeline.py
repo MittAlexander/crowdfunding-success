@@ -89,6 +89,27 @@ def tune(name: str, model_cfg: dict, X, y, cv_cfg: dict, seed: int, n_jobs: int)
     return search.fit(X, y)
 
 
+def _add_confidence_intervals(metrics: pd.DataFrame, y_test, raw_probas: dict,
+                              cal_probas: dict, boot_cfg: dict, seed: int,
+                              run_dir: Path) -> pd.DataFrame:
+    """Attach bootstrap intervals to the test rows and write pairwise model comparisons."""
+    n_resamples, confidence = boot_cfg["n_resamples"], boot_cfg.get("confidence", 0.95)
+    logger.info("Bootstrapping test metrics (%d resamples) ...", n_resamples)
+    intervals, comparisons = [], []
+    for variant, probas in (("raw", raw_probas), ("calibrated", cal_probas)):
+        samples = evaluate.bootstrap_metrics(y_test, probas, n_resamples, seed)
+        intervals.append(evaluate.confidence_intervals(samples, confidence)
+                         .assign(split="test", variant=variant))
+        # Compare every model with the best one of this variant by test ROC-AUC.
+        observed = metrics[(metrics["split"] == "test") & (metrics["variant"] == variant)]
+        reference = observed.loc[observed["roc_auc"].idxmax(), "model"]
+        comparisons.append(evaluate.compare_to_reference(
+            samples, reference, ["roc_auc", "log_loss", "brier"], confidence,
+        ).assign(variant=variant))
+    pd.concat(comparisons).to_csv(run_dir / "model_comparison.csv", index=False)
+    return metrics.merge(pd.concat(intervals), on=["model", "split", "variant"], how="left")
+
+
 def run(config: dict, config_path: Path = Path("<in-memory>"),
         only_models: list[str] | None = None) -> Path:
     # Expected: duration and launch hour have few distinct values, so some quantile
@@ -146,6 +167,10 @@ def run(config: dict, config_path: Path = Path("<in-memory>"),
                     name, elapsed, best_params[name], rows[-2]["roc_auc"])
 
     metrics = evaluate.metrics_table(rows)
+    boot_cfg = config.get("bootstrap", {})
+    if raw_probas and boot_cfg.get("n_resamples", 0) > 0:
+        metrics = _add_confidence_intervals(metrics, y_test, raw_probas, cal_probas, boot_cfg,
+                                            seed, run_dir)
     metrics.to_csv(run_dir / "metrics.csv", index=False)
     with open(run_dir / "best_params.json", "w", encoding="utf-8") as f:
         json.dump(best_params, f, indent=2, default=str)
@@ -170,7 +195,8 @@ def run(config: dict, config_path: Path = Path("<in-memory>"),
     if importances:
         pd.concat(importances).to_csv(run_dir / "shap_importance.csv", index=False)
 
-    test_view = metrics[metrics["split"] == "test"]
+    test_view = metrics.loc[metrics["split"] == "test",
+                            [c for c in metrics.columns if "_ci_" not in c]]
     with pd.option_context("display.width", 160, "display.max_columns", 20):
         logger.info("Test-set results:\n%s", test_view.round(4).to_string(index=False))
     logger.info("Finished. Outputs in %s", run_dir)

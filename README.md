@@ -18,7 +18,8 @@ Every run writes to `outputs/<timestamp>/`:
 
 | File | Content |
 |---|---|
-| `metrics.csv` | Train and test metrics for each model, before and after calibration |
+| `metrics.csv` | Train and test metrics for each model, before and after calibration, with 95% bootstrap intervals for the test metrics |
+| `model_comparison.csv` | Paired bootstrap differences between each model and the best one (ROC-AUC, log loss, Brier) |
 | `best_params.json`, `cv_results/` | Chosen hyperparameters and full search results |
 | `figures/roc_curves.png` | ROC curves on the test set |
 | `figures/reliability.png` | Reliability diagrams before and after calibration |
@@ -54,6 +55,10 @@ Every run writes to `outputs/<timestamp>/`:
 6. **Calibration** (`src/evaluate.py`): isotonic (or sigmoid) regression fitted on the
    calibration set, on top of the frozen model.
 7. **Evaluation**: ROC-AUC, PR-AUC, log loss, Brier score, accuracy and F1, on the test set.
+   Uncertainty comes from 1000 bootstrap resamples of the test set, giving percentile
+   intervals per model. All models are scored on the same resamples, so differences
+   between two models are compared pairwise. This is far more precise than checking
+   whether their individual intervals overlap.
 8. **Explanation** (`src/explain.py`): SHAP values for CatBoost (native, exact) and LightGBM
    (TreeSHAP).
 
